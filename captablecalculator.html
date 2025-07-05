@@ -1,0 +1,223 @@
+import React, { useState, useMemo } from 'react';
+
+// Utility function to format numbers as currency
+const formatCurrency = (value) => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+};
+
+// Utility function to format numbers with commas
+const formatNumber = (value) => {
+  return new Intl.NumberFormat('en-US').format(value);
+};
+
+// Main App Component
+export default function App() {
+  // State for the investment rounds
+  const [rounds, setRounds] = useState([
+    { name: 'Founders', investment: 25000, shares: 1000000, type: 'common' },
+    { name: 'Seed Round', investment: 500000, shares: 500000, type: 'preferred' },
+    { name: 'Series A', investment: 2000000, shares: 800000, type: 'preferred' },
+  ]);
+
+  // State for the new investment form inputs
+  const [newRoundName, setNewRoundName] = useState('Series B');
+  const [newInvestment, setNewInvestment] = useState(5000000);
+  const [preMoneyValuation, setPreMoneyValuation] = useState(10000000);
+
+  // Memoized calculation for the cap table data
+  const capTableData = useMemo(() => {
+    let cumulativeShares = 0;
+    const table = rounds.map(round => {
+      cumulativeShares += round.shares;
+      return { ...round };
+    });
+
+    const totalSharesPreNewRound = cumulativeShares;
+    const pricePerShareNewRound = preMoneyValuation / totalSharesPreNewRound;
+    const newSharesIssued = newInvestment / pricePerShareNewRound;
+    
+    const allRounds = [...table];
+    if (isFinite(newSharesIssued) && newSharesIssued > 0) {
+        allRounds.push({
+            name: newRoundName,
+            investment: newInvestment,
+            shares: newSharesIssued,
+            type: 'preferred'
+        });
+    }
+
+    const totalPostMoneyShares = totalSharesPreNewRound + (isFinite(newSharesIssued) && newSharesIssued > 0 ? newSharesIssued : 0);
+
+    return allRounds.map(round => {
+      const ownership = (round.shares / totalPostMoneyShares) * 100;
+      const pricePerShare = round.investment / round.shares;
+      return { ...round, ownership, pricePerShare };
+    });
+  }, [rounds, newRoundName, newInvestment, preMoneyValuation]);
+
+  // Memoized calculation for summary metrics
+  const summaryMetrics = useMemo(() => {
+    const totalSharesPreNewRound = rounds.reduce((acc, r) => acc + r.shares, 0);
+    const pricePerShareNewRound = preMoneyValuation / totalSharesPreNewRound;
+    const newSharesIssued = isFinite(pricePerShareNewRound) && pricePerShareNewRound > 0 ? newInvestment / pricePerShareNewRound : 0;
+    const totalPostMoneyShares = totalSharesPreNewRound + newSharesIssued;
+    const postMoneyValuation = preMoneyValuation + newInvestment;
+
+    return {
+      totalSharesPreNewRound,
+      pricePerShareNewRound,
+      newSharesIssued,
+      totalPostMoneyShares,
+      postMoneyValuation,
+    };
+  }, [rounds, newInvestment, preMoneyValuation]);
+
+
+  // Handler to add a new investment round
+  const handleAddRound = (e) => {
+    e.preventDefault();
+    if (!newRoundName || !preMoneyValuation || !newInvestment) {
+        alert("Please fill in all fields for the new round.");
+        return;
+    }
+    
+    const pricePerShare = summaryMetrics.pricePerShareNewRound;
+    if (pricePerShare <= 0 || !isFinite(pricePerShare)) {
+        alert("Pre-money valuation must be positive to issue new shares.");
+        return;
+    }
+
+    const newShares = newInvestment / pricePerShare;
+
+    setRounds([
+      ...rounds,
+      { name: newRoundName, investment: newInvestment, shares: newShares, type: 'preferred' },
+    ]);
+    
+    // Reset form for next entry
+    const nextRoundLetter = String.fromCharCode(newRoundName.charCodeAt(newRoundName.length - 1) + 1);
+    setNewRoundName(`Series ${nextRoundLetter}`);
+    setPreMoneyValuation(summaryMetrics.postMoneyValuation);
+    setNewInvestment(newInvestment * 2);
+
+  };
+
+  // Render the component
+  return (
+    <div className="bg-gray-50 min-h-screen font-sans text-gray-800">
+      <div className="container mx-auto p-4 md:p-8">
+        <header className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-gray-900">Shareholder Cap Table Model</h1>
+          <p className="text-lg text-gray-600 mt-2">Analyze investment rounds and ownership dilution.</p>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Investment Round Form */}
+          <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+            <h2 className="text-2xl font-semibold mb-6 text-gray-800 border-b pb-3">Add New Investment Round</h2>
+            <form onSubmit={handleAddRound} className="space-y-4">
+              <div>
+                <label htmlFor="roundName" className="block text-sm font-medium text-gray-700">Round Name</label>
+                <input
+                  type="text"
+                  id="roundName"
+                  value={newRoundName}
+                  onChange={(e) => setNewRoundName(e.target.value)}
+                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                  placeholder="e.g., Series B"
+                />
+              </div>
+              <div>
+                <label htmlFor="preMoney" className="block text-sm font-medium text-gray-700">Pre-Money Valuation</label>
+                <input
+                  type="number"
+                  id="preMoney"
+                  value={preMoneyValuation}
+                  onChange={(e) => setPreMoneyValuation(parseFloat(e.target.value) || 0)}
+                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label htmlFor="investment" className="block text-sm font-medium text-gray-700">New Investment Amount</label>
+                <input
+                  type="number"
+                  id="investment"
+                  value={newInvestment}
+                  onChange={(e) => setNewInvestment(parseFloat(e.target.value) || 0)}
+                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-300 ease-in-out transform hover:scale-105"
+              >
+                Add Round to Table
+              </button>
+            </form>
+             <div className="mt-6 p-4 bg-gray-100 rounded-lg border border-gray-200">
+                <h3 className="font-semibold text-lg mb-2 text-gray-800">New Round Calculation</h3>
+                <div className="text-sm space-y-2 text-gray-600">
+                    <p><strong>Price/Share:</strong> {formatCurrency(summaryMetrics.pricePerShareNewRound)}</p>
+                    <p><strong>New Shares Issued:</strong> {formatNumber(summaryMetrics.newSharesIssued.toFixed(0))}</p>
+                </div>
+            </div>
+          </div>
+
+          {/* Cap Table and Summary */}
+          <div className="lg:col-span-2">
+            <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-200">
+              <h2 className="text-2xl font-semibold mb-4 text-gray-800">Capitalization Table (Post-Money)</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider">Investor/Round</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Investment</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Shares</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Price/Share</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Ownership</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {capTableData.map((round, index) => (
+                      <tr key={index} className="hover:bg-gray-50">
+                        <td className="p-4 whitespace-nowrap font-medium text-gray-800">{round.name}</td>
+                        <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatCurrency(round.investment)}</td>
+                        <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatNumber(round.shares.toFixed(0))}</td>
+                        <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatCurrency(round.pricePerShare)}</td>
+                        <td className="p-4 whitespace-nowrap text-gray-600 text-right font-medium">{round.ownership.toFixed(2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            
+            <div className="mt-8 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                <h2 className="text-2xl font-semibold mb-4 text-gray-800">Valuation Summary</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-center">
+                    <div className="bg-indigo-100 p-4 rounded-lg">
+                        <p className="text-sm text-indigo-800 font-semibold uppercase">Post-Money Valuation</p>
+                        <p className="text-2xl font-bold text-indigo-900">{formatCurrency(summaryMetrics.postMoneyValuation)}</p>
+                    </div>
+                    <div className="bg-green-100 p-4 rounded-lg">
+                        <p className="text-sm text-green-800 font-semibold uppercase">Total Shares Outstanding</p>
+                        <p className="text-2xl font-bold text-green-900">{formatNumber(summaryMetrics.totalPostMoneyShares.toFixed(0))}</p>
+                    </div>
+                </div>
+            </div>
+          </div>
+        </div>
+        
+        <footer className="text-center mt-12 text-gray-500 text-sm">
+            <p>This is a simplified model for illustrative purposes. Real-world cap tables can be more complex.</p>
+        </footer>
+      </div>
+    </div>
+  );
+}
