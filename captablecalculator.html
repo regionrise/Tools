@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 
 // Utility function to format numbers as currency
 const formatCurrency = (value) => {
+  if (isNaN(value)) return '$0.00';
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -12,6 +13,7 @@ const formatCurrency = (value) => {
 
 // Utility function to format numbers with commas
 const formatNumber = (value) => {
+    if (isNaN(value)) return '0';
   return new Intl.NumberFormat('en-US').format(value);
 };
 
@@ -24,87 +26,156 @@ export default function App() {
     { name: 'Series A', investment: 2000000, shares: 800000, type: 'preferred' },
   ]);
 
+  // State for the form to add initial/existing rounds
+  const [initialRoundName, setInitialRoundName] = useState('');
+  const [initialInvestment, setInitialInvestment] = useState('');
+  const [initialShares, setInitialShares] = useState('');
+
   // State for the new investment form inputs
   const [newRoundName, setNewRoundName] = useState('Series B');
-  const [newInvestment, setNewInvestment] = useState(5000000);
-  const [preMoneyValuation, setPreMoneyValuation] = useState(10000000);
+  const [newInvestment, setNewInvestment] = useState(10000000);
+  const [preMoneyValuation, setPreMoneyValuation] = useState(20000000);
+  const [esopPercent, setEsopPercent] = useState(10);
 
-  // Memoized calculation for the cap table data
-  const capTableData = useMemo(() => {
-    let cumulativeShares = 0;
+  // Memoized calculation for the CURRENT cap table data (Status Quo)
+  const currentStateData = useMemo(() => {
+    const totalShares = rounds.reduce((acc, round) => acc + round.shares, 0);
+    if (totalShares === 0) return { table: [], totalShares: 0 };
+
     const table = rounds.map(round => {
-      cumulativeShares += round.shares;
-      return { ...round };
+      const ownership = (round.shares / totalShares) * 100;
+      const pricePerShare = round.investment / round.shares;
+      return { ...round, ownership, pricePerShare };
     });
+    return { table, totalShares };
+  }, [rounds]);
 
-    const totalSharesPreNewRound = cumulativeShares;
-    const pricePerShareNewRound = preMoneyValuation / totalSharesPreNewRound;
-    const newSharesIssued = newInvestment / pricePerShareNewRound;
+  // Memoized calculation for the PRO-FORMA cap table data (Post-New Investment)
+  const proFormaCapTableData = useMemo(() => {
+    const S_pre = currentStateData.totalShares;
+    const V_pre = preMoneyValuation;
+    const I_new = newInvestment;
+    const E_pct = esopPercent / 100;
+
+    if (V_pre <= 0 || I_new <= 0 || S_pre <= 0) {
+        return { table: [], summary: {} };
+    }
     
-    const allRounds = [...table];
+    let S_esop = 0;
+    // This formula calculates the required ESOP shares to hit the target % post-investment
+    if (E_pct > 0) {
+        const K = E_pct / (1 - E_pct);
+        const numerator = K * S_pre * (1 + I_new / V_pre);
+        const denominator = 1 - (K * I_new / V_pre);
+        if (denominator > 0) {
+            S_esop = numerator / denominator;
+        }
+    }
+
+    const preMoneySharesFD = S_pre + S_esop;
+    const pricePerShareNewRound = V_pre / preMoneySharesFD;
+    const newSharesIssued = I_new / pricePerShareNewRound;
+    
+    const allRounds = [...rounds];
+    
+    if (S_esop > 0) {
+        allRounds.push({
+            name: 'ESOP Pool',
+            investment: 0,
+            shares: S_esop,
+            type: 'options'
+        });
+    }
+
     if (isFinite(newSharesIssued) && newSharesIssued > 0) {
         allRounds.push({
             name: newRoundName,
-            investment: newInvestment,
+            investment: I_new,
             shares: newSharesIssued,
             type: 'preferred'
         });
     }
 
-    const totalPostMoneyShares = totalSharesPreNewRound + (isFinite(newSharesIssued) && newSharesIssued > 0 ? newSharesIssued : 0);
+    const totalPostMoneyShares = S_pre + S_esop + newSharesIssued;
+    if (totalPostMoneyShares === 0) return { table: [], summary: {} };
 
-    return allRounds.map(round => {
+    const table = allRounds.map(round => {
       const ownership = (round.shares / totalPostMoneyShares) * 100;
-      const pricePerShare = round.investment / round.shares;
+      const pricePerShare = round.shares > 0 ? round.investment / round.shares : 0;
       return { ...round, ownership, pricePerShare };
     });
-  }, [rounds, newRoundName, newInvestment, preMoneyValuation]);
 
-  // Memoized calculation for summary metrics
-  const summaryMetrics = useMemo(() => {
-    const totalSharesPreNewRound = rounds.reduce((acc, r) => acc + r.shares, 0);
-    const pricePerShareNewRound = preMoneyValuation / totalSharesPreNewRound;
-    const newSharesIssued = isFinite(pricePerShareNewRound) && pricePerShareNewRound > 0 ? newInvestment / pricePerShareNewRound : 0;
-    const totalPostMoneyShares = totalSharesPreNewRound + newSharesIssued;
-    const postMoneyValuation = preMoneyValuation + newInvestment;
-
-    return {
-      totalSharesPreNewRound,
+    const summary = {
       pricePerShareNewRound,
       newSharesIssued,
+      esopShares: S_esop,
       totalPostMoneyShares,
-      postMoneyValuation,
-    };
-  }, [rounds, newInvestment, preMoneyValuation]);
+      postMoneyValuation: V_pre + I_new,
+    }
 
+    return { table, summary };
+  }, [rounds, newRoundName, newInvestment, preMoneyValuation, esopPercent, currentStateData.totalShares]);
 
-  // Handler to add a new investment round
-  const handleAddRound = (e) => {
+  // Handler to add an initial round to the status quo
+  const handleAddInitialRound = (e) => {
     e.preventDefault();
-    if (!newRoundName || !preMoneyValuation || !newInvestment) {
-        alert("Please fill in all fields for the new round.");
+    if (!initialRoundName || initialInvestment < 0 || initialShares <= 0) {
+        alert("Please fill all fields with valid numbers for the initial round.");
+        return;
+    }
+    setRounds([...rounds, {
+        name: initialRoundName,
+        investment: parseFloat(initialInvestment),
+        shares: parseFloat(initialShares),
+        type: 'initial'
+    }]);
+    // Reset form
+    setInitialRoundName('');
+    setInitialInvestment('');
+    setInitialShares('');
+  };
+  
+  // Handler to remove any round
+  const handleRemoveRound = (indexToRemove) => {
+    setRounds(rounds.filter((_, index) => index !== indexToRemove));
+  };
+
+
+  // Handler to add the modeled investment round to the main table
+  const handleCommitNewRound = (e) => {
+    e.preventDefault();
+    const { newSharesIssued, esopShares } = proFormaCapTableData.summary;
+
+    if (!newRoundName || preMoneyValuation <= 0 || newInvestment <= 0 || !isFinite(newSharesIssued) || newSharesIssued <= 0) {
+        alert("Please ensure the new round details are valid before adding.");
         return;
     }
     
-    const pricePerShare = summaryMetrics.pricePerShareNewRound;
-    if (pricePerShare <= 0 || !isFinite(pricePerShare)) {
-        alert("Pre-money valuation must be positive to issue new shares.");
-        return;
+    const newRoundsList = [...rounds];
+    if (esopShares > 0) {
+        newRoundsList.push({ name: 'ESOP Pool', investment: 0, shares: esopShares, type: 'options' });
     }
+    newRoundsList.push({ name: newRoundName, investment: newInvestment, shares: newSharesIssued, type: 'preferred' });
 
-    const newShares = newInvestment / pricePerShare;
-
-    setRounds([
-      ...rounds,
-      { name: newRoundName, investment: newInvestment, shares: newShares, type: 'preferred' },
-    ]);
+    setRounds(newRoundsList);
     
     // Reset form for next entry
-    const nextRoundLetter = String.fromCharCode(newRoundName.charCodeAt(newRoundName.length - 1) + 1);
-    setNewRoundName(`Series ${nextRoundLetter}`);
-    setPreMoneyValuation(summaryMetrics.postMoneyValuation);
-    setNewInvestment(newInvestment * 2);
-
+    const lastRoundName = newRoundName;
+    if (lastRoundName.toLowerCase().includes('series')) {
+        const lastLetter = lastRoundName.charAt(lastRoundName.length - 1);
+        if (lastLetter >= 'A' && lastLetter < 'Z') {
+            const nextRoundLetter = String.fromCharCode(lastLetter.charCodeAt(0) + 1);
+            setNewRoundName(`Series ${nextRoundLetter}`);
+        } else {
+            setNewRoundName('');
+        }
+    } else {
+        setNewRoundName('New Round');
+    }
+    
+    setPreMoneyValuation(proFormaCapTableData.summary.postMoneyValuation || 0);
+    setNewInvestment(newInvestment * 1.5);
+    setEsopPercent(10);
   };
 
   // Render the component
@@ -113,81 +184,123 @@ export default function App() {
       <div className="container mx-auto p-4 md:p-8">
         <header className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-900">Shareholder Cap Table Model</h1>
-          <p className="text-lg text-gray-600 mt-2">Analyze investment rounds and ownership dilution.</p>
+          <p className="text-lg text-gray-600 mt-2">Build your current cap table, then model future investment rounds.</p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Investment Round Form */}
-          <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
-            <h2 className="text-2xl font-semibold mb-6 text-gray-800 border-b pb-3">Add New Investment Round</h2>
-            <form onSubmit={handleAddRound} className="space-y-4">
-              <div>
-                <label htmlFor="roundName" className="block text-sm font-medium text-gray-700">Round Name</label>
-                <input
-                  type="text"
-                  id="roundName"
-                  value={newRoundName}
-                  onChange={(e) => setNewRoundName(e.target.value)}
-                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                  placeholder="e.g., Series B"
-                />
-              </div>
-              <div>
-                <label htmlFor="preMoney" className="block text-sm font-medium text-gray-700">Pre-Money Valuation</label>
-                <input
-                  type="number"
-                  id="preMoney"
-                  value={preMoneyValuation}
-                  onChange={(e) => setPreMoneyValuation(parseFloat(e.target.value) || 0)}
-                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label htmlFor="investment" className="block text-sm font-medium text-gray-700">New Investment Amount</label>
-                <input
-                  type="number"
-                  id="investment"
-                  value={newInvestment}
-                  onChange={(e) => setNewInvestment(parseFloat(e.target.value) || 0)}
-                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                />
-              </div>
-              <button
-                type="submit"
-                className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-300 ease-in-out transform hover:scale-105"
-              >
-                Add Round to Table
-              </button>
-            </form>
-             <div className="mt-6 p-4 bg-gray-100 rounded-lg border border-gray-200">
-                <h3 className="font-semibold text-lg mb-2 text-gray-800">New Round Calculation</h3>
-                <div className="text-sm space-y-2 text-gray-600">
-                    <p><strong>Price/Share:</strong> {formatCurrency(summaryMetrics.pricePerShareNewRound)}</p>
-                    <p><strong>New Shares Issued:</strong> {formatNumber(summaryMetrics.newSharesIssued.toFixed(0))}</p>
-                </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+          {/* Input Forms Column */}
+          <div className="lg:col-span-1 space-y-8 sticky top-8">
+            {/* Form for Initial Rounds */}
+            <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                <h2 className="text-2xl font-semibold mb-6 text-gray-800 border-b pb-3">Build Status Quo</h2>
+                <form onSubmit={handleAddInitialRound} className="space-y-4">
+                  <div>
+                    <label htmlFor="initialRoundName" className="block text-sm font-medium text-gray-700">Investor / Round</label>
+                    <input type="text" id="initialRoundName" value={initialRoundName} onChange={(e) => setInitialRoundName(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-green-500 focus:border-green-500" placeholder="e.g., Founders"/>
+                  </div>
+                  <div>
+                    <label htmlFor="initialInvestment" className="block text-sm font-medium text-gray-700">Investment Amount</label>
+                    <input type="number" id="initialInvestment" value={initialInvestment} onChange={(e) => setInitialInvestment(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-green-500 focus:border-green-500" placeholder="e.g., 25000"/>
+                  </div>
+                  <div>
+                    <label htmlFor="initialShares" className="block text-sm font-medium text-gray-700">Shares Issued</label>
+                    <input type="number" id="initialShares" value={initialShares} onChange={(e) => setInitialShares(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-green-500 focus:border-green-500" placeholder="e.g., 1000000"/>
+                  </div>
+                  <button type="submit" className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-all duration-300 ease-in-out transform hover:scale-105">
+                    Add to Status Quo
+                  </button>
+                </form>
+            </div>
+
+            {/* Form for Modeling New Round */}
+            <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                <h2 className="text-2xl font-semibold mb-6 text-gray-800 border-b pb-3">Model Next Round</h2>
+                <form onSubmit={handleCommitNewRound} className="space-y-4">
+                  <div>
+                    <label htmlFor="roundName" className="block text-sm font-medium text-gray-700">Round Name</label>
+                    <input type="text" id="roundName" value={newRoundName} onChange={(e) => setNewRoundName(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" placeholder="e.g., Series B"/>
+                  </div>
+                   <div>
+                    <label htmlFor="esopPercent" className="block text-sm font-medium text-gray-700">Post-Money ESOP Pool (%)</label>
+                    <input type="number" id="esopPercent" value={esopPercent} onChange={(e) => setEsopPercent(parseFloat(e.target.value) || 0)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"/>
+                  </div>
+                  <div>
+                    <label htmlFor="preMoney" className="block text-sm font-medium text-gray-700">Pre-Money Valuation</label>
+                    <input type="number" id="preMoney" value={preMoneyValuation} onChange={(e) => setPreMoneyValuation(parseFloat(e.target.value) || 0)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"/>
+                  </div>
+                  <div>
+                    <label htmlFor="investment" className="block text-sm font-medium text-gray-700">New Investment Amount</label>
+                    <input type="number" id="investment" value={newInvestment} onChange={(e) => setNewInvestment(parseFloat(e.target.value) || 0)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"/>
+                  </div>
+                  <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-300 ease-in-out transform hover:scale-105">
+                    Commit Round to Table
+                  </button>
+                </form>
             </div>
           </div>
 
-          {/* Cap Table and Summary */}
-          <div className="lg:col-span-2">
+          {/* Cap Tables and Summary Column */}
+          <div className="lg:col-span-2 space-y-8">
+            {/* Current State Table */}
             <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-200">
-              <h2 className="text-2xl font-semibold mb-4 text-gray-800">Capitalization Table (Post-Money)</h2>
+              <h2 className="text-2xl font-semibold mb-4 text-gray-800">Current Capitalization (Status Quo)</h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead className="bg-gray-100">
                     <tr>
                       <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider">Investor/Round</th>
-                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Investment</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Shares</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Ownership</th>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {currentStateData.table.length === 0 && (
+                        <tr><td colSpan="4" className="text-center p-8 text-gray-500">Add initial rounds using the form on the left to build your current cap table.</td></tr>
+                    )}
+                    {currentStateData.table.map((round, index) => (
+                      <tr key={index} className="hover:bg-gray-50">
+                        <td className="p-4 whitespace-nowrap font-medium text-gray-800">{round.name}</td>
+                        <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatNumber(round.shares.toFixed(0))}</td>
+                        <td className="p-4 whitespace-nowrap text-gray-600 text-right font-medium">{round.ownership.toFixed(2)}%</td>
+                        <td className="p-4 whitespace-nowrap text-center">
+                            <button onClick={() => handleRemoveRound(index)} className="text-red-500 hover:text-red-700 font-semibold">Remove</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                   <tfoot className="bg-gray-100 font-bold">
+                        <tr>
+                            <td className="p-4 text-gray-800">Total</td>
+                            <td className="p-4 text-gray-800 text-right">{formatNumber(currentStateData.totalShares)}</td>
+                            <td className="p-4 text-gray-800 text-right">{currentStateData.totalShares > 0 ? '100.00%' : '0.00%'}</td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+              </div>
+            </div>
+
+            {/* Pro-Forma Table */}
+            <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-200">
+              <h2 className="text-2xl font-semibold mb-4 text-gray-800">Pro-Forma Capitalization (Post-Modeled Investment)</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider">Investor/Round</th>
                       <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Shares</th>
                       <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Price/Share</th>
                       <th className="p-4 font-semibold text-sm text-gray-600 uppercase tracking-wider text-right">Ownership</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {capTableData.map((round, index) => (
-                      <tr key={index} className="hover:bg-gray-50">
+                    {proFormaCapTableData.table.length === 0 && (
+                        <tr><td colSpan="4" className="text-center p-8 text-gray-500">Enter details in the "Model Next Round" form to see pro-forma results.</td></tr>
+                    )}
+                    {proFormaCapTableData.table.map((round, index) => (
+                      <tr key={index} className={`hover:bg-gray-50 ${round.name === newRoundName ? 'bg-indigo-50 font-bold' : ''} ${round.name === 'ESOP Pool' ? 'bg-yellow-50' : ''}`}>
                         <td className="p-4 whitespace-nowrap font-medium text-gray-800">{round.name}</td>
-                        <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatCurrency(round.investment)}</td>
                         <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatNumber(round.shares.toFixed(0))}</td>
                         <td className="p-4 whitespace-nowrap text-gray-600 text-right">{formatCurrency(round.pricePerShare)}</td>
                         <td className="p-4 whitespace-nowrap text-gray-600 text-right font-medium">{round.ownership.toFixed(2)}%</td>
@@ -196,18 +309,21 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-            </div>
-            
-            <div className="mt-8 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
-                <h2 className="text-2xl font-semibold mb-4 text-gray-800">Valuation Summary</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-center">
-                    <div className="bg-indigo-100 p-4 rounded-lg">
-                        <p className="text-sm text-indigo-800 font-semibold uppercase">Post-Money Valuation</p>
-                        <p className="text-2xl font-bold text-indigo-900">{formatCurrency(summaryMetrics.postMoneyValuation)}</p>
+               <div className="mt-6 p-4 bg-gray-100 rounded-lg border border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <h3 className="font-semibold text-lg text-gray-800">New Round Calculation</h3>
+                        <div className="text-sm space-y-1 text-gray-600 mt-2">
+                            <p><strong>Price/Share:</strong> {formatCurrency(proFormaCapTableData.summary.pricePerShareNewRound)}</p>
+                            <p><strong>New Investor Shares:</strong> {formatNumber(proFormaCapTableData.summary.newSharesIssued?.toFixed(0))}</p>
+                            <p><strong>New ESOP Shares:</strong> {formatNumber(proFormaCapTableData.summary.esopShares?.toFixed(0))}</p>
+                        </div>
                     </div>
-                    <div className="bg-green-100 p-4 rounded-lg">
-                        <p className="text-sm text-green-800 font-semibold uppercase">Total Shares Outstanding</p>
-                        <p className="text-2xl font-bold text-green-900">{formatNumber(summaryMetrics.totalPostMoneyShares.toFixed(0))}</p>
+                    <div>
+                        <h3 className="font-semibold text-lg text-gray-800">Valuation Summary</h3>
+                        <div className="text-sm space-y-1 text-gray-600 mt-2">
+                            <p><strong>Post-Money Valuation:</strong> {formatCurrency(proFormaCapTableData.summary.postMoneyValuation)}</p>
+                            <p><strong>Total Pro-Forma Shares:</strong> {formatNumber(proFormaCapTableData.summary.totalPostMoneyShares?.toFixed(0))}</p>
+                        </div>
                     </div>
                 </div>
             </div>
